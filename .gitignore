@@ -1,0 +1,15 @@
+# Installed by npm install
+node_modules/
+
+# Created by npm run build
+dist/
+
+# Local addresses and secrets. Keep .env.example in git.
+.env
+.env.local
+.env.*.local
+
+# Logs and macOS files
+*.log
+npm-debug.log*
+.DS_Store
