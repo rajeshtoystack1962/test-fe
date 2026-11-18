@@ -3,6 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createHandler } from "./server-core.js";
 
 function loadEnvFile(file) {
   if (!fs.existsSync(file)) return;
@@ -27,42 +28,29 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 loadEnvFile(path.join(ROOT, ".env"));
 
 const PORT = Number(process.env.PORT || 3000);
-const BACKEND_URL = new URL(process.env.BACKEND_URL || "http://localhost:8000");
-const DIST = path.join(ROOT, "dist");
 
-const TYPES = {
-  ".html": "text/html", ".js": "application/javascript", ".css": "text/css",
-  ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png",
-  ".ico": "image/x-icon", ".jpg": "image/jpeg", ".woff2": "font/woff2",
-};
-
-function proxy(req, res) {
-  const upstream = http.request(
-    {
-      hostname: BACKEND_URL.hostname,
-      port: BACKEND_URL.port || 80,
-      path: req.url,
-      method: req.method,
-      headers: { ...req.headers, host: BACKEND_URL.host },
-    },
-    (up) => { res.writeHead(up.statusCode, up.headers); up.pipe(res); }
-  );
-  upstream.on("error", (e) => {
-    res.writeHead(502, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "backend unreachable", detail: e.message }));
-  });
-  req.pipe(upstream);
+let BACKEND_URL;
+try {
+  BACKEND_URL = new URL(process.env.BACKEND_URL || "http://localhost:8000");
+  if (!["http:", "https:"].includes(BACKEND_URL.protocol)) throw new Error("must start with http:// or https://");
+} catch (e) {
+  console.error(`Invalid BACKEND_URL "${process.env.BACKEND_URL}": ${e.message}`);
+  process.exit(1);
 }
 
-function serveStatic(req, res) {
-  const urlPath = decodeURIComponent(req.url.split("?")[0]);
-  let file = path.normalize(path.join(DIST, urlPath));
-  if (!file.startsWith(DIST)) { res.writeHead(403); return res.end(); }
-  if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(DIST, "index.html"); // SPA fallback
-  res.writeHead(200, { "Content-Type": TYPES[path.extname(file)] || "application/octet-stream" });
-  fs.createReadStream(file).pipe(res);
-}
+const server = http.createServer(
+  createHandler({ dist: path.join(ROOT, "dist"), backendUrl: BACKEND_URL })
+);
 
-http
-  .createServer((req, res) => (req.url.startsWith("/api") ? proxy(req, res) : serveStatic(req, res)))
-  .listen(PORT, "0.0.0.0", () => console.log(`Frontend on :${PORT}, proxying /api -> ${BACKEND_URL.origin}`));
+server.listen(PORT, "0.0.0.0", () =>
+  console.log(`Frontend on :${PORT}, proxying /api -> ${BACKEND_URL.origin}`)
+);
+
+// Stop cleanly when PM2, Docker or Kubernetes asks the process to exit.
+function shutdown(signal) {
+  console.log(`${signal} received, shutting down`);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
